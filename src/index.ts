@@ -99,7 +99,13 @@ export async function upload(
   }
 }
 
-export default upload;
+
+export { upload, boards };
+
+
+const uploader = upload;
+export default uploader;
+
 
 declare global {
   interface Window {
@@ -107,7 +113,9 @@ declare global {
   }
 }
 
+
 window.ArduinoWeb = {
   upload,
   boards,
 };
+
