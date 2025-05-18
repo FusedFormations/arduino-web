@@ -101,7 +101,13 @@ export async function upload(
 
 export default upload;
 
-(window as any).ArduinoWeb = {
+declare global {
+  interface Window {
+    ArduinoWeb: any;
+  }
+}
+
+window.ArduinoWeb = {
   upload,
   boards,
 };
