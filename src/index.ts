@@ -99,7 +99,7 @@ export async function upload(
   }
 }
 
-export default upload
+export default upload;
 
 (window as any).ArduinoWeb = {
   upload,
