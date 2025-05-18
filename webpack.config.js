@@ -2,12 +2,12 @@ const path = require('path');
 
 module.exports = {
   mode: 'production',
-  entry: './dist/index.js', // after tsc builds index.ts
+  entry: './dist/index.js',
   output: {
     filename: 'main.js',
     path: path.resolve(__dirname, 'dist'),
     library: 'ArduinoWeb',
-    libraryTarget: 'window' // makes ArduinoWeb available globally
+    libraryTarget: 'window' // 
   },
   module: {
     rules: [
@@ -21,4 +21,5 @@ module.exports = {
     ]
   }
 };
+
 
