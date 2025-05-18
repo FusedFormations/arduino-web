@@ -100,3 +100,8 @@ export async function upload(
 }
 
 export default upload
+
+(window as any).ArduinoWeb = {
+  upload,
+  boards,
+};
