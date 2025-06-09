@@ -1,1 +1,95 @@
+name: Compile Arduino Sketches
 
+on:
+  push:
+    paths:
+      - 'sketches/**'
+  workflow_dispatch:
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        board:
+          - fqbn: "arduino:avr:uno"
+            name: "uno"
+          - fqbn: "arduino:avr:mega"
+            name: "mega"  
+          - fqbn: "arduino:avr:nano"
+            name: "nano"
+          - fqbn: "arduino:avr:leonardo"
+            name: "leonardo"
+          - fqbn: "arduino:avr:pro"
+            name: "promini"
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Setup Arduino CLI
+      uses: arduino/setup-arduino-cli@v1
+      
+    - name: Install Arduino AVR core
+      run: |
+        arduino-cli core update-index
+        arduino-cli core install arduino:avr
+        
+    - name: Install required libraries
+      run: |
+        arduino-cli lib install "Servo"
+        arduino-cli lib install "SoftwareSerial"
+        
+    - name: Create builds directory
+      run: mkdir -p builds
+      
+    - name: Find and compile sketches
+      run: |
+        # Find all .ino files in sketches directory
+        find sketches -name "*.ino" | while read sketch; do
+          echo "Compiling $sketch for ${{ matrix.board.name }}"
+          
+          # Extract sketch name without extension and path
+          sketch_name=$(basename "$sketch" .ino)
+          
+          # Create build directory for this sketch
+          build_dir="builds/${sketch_name}"
+          mkdir -p "$build_dir"
+          
+          # Compile the sketch
+          if arduino-cli compile --fqbn "${{ matrix.board.fqbn }}" --output-dir "$build_dir" "$sketch"; then
+            echo "✅ Successfully compiled $sketch_name for ${{ matrix.board.name }}"
+            
+            # Find the generated hex file and copy it with a clear name
+            find "$build_dir" -name "*.hex" | head -1 | while read hex_file; do
+              if [ -f "$hex_file" ]; then
+                cp "$hex_file" "builds/${sketch_name}.hex"
+                echo "📦 Hex file saved as: builds/${sketch_name}.hex"
+              fi
+            done
+            
+          else
+            echo "❌ Failed to compile $sketch_name for ${{ matrix.board.name }}"
+            echo "Compilation failed for ${{ matrix.board.name }}" > "builds/${sketch_name}_error.txt"
+          fi
+        done
+        
+    - name: List generated files
+      run: |
+        echo "Generated build files:"
+        ls -la builds/ || echo "No builds directory found"
+        
+    - name: Commit compiled files
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add builds/
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "Auto-compile Arduino sketches for ${{ matrix.board.name }}"
+          git push
+        fi
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
