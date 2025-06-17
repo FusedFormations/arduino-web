@@ -41,12 +41,22 @@ jobs:
           git diff --name-only HEAD~1 HEAD | grep -E '\.(ino|cpp|h)
     
     - name: Update Arduino CLI core index
-      run: arduino-cli core update-index --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+      run: arduino-cli core update-index
+    
+    - name: Install common Arduino Uno libraries
+      run: |
+        arduino-cli lib install "Servo"
+        arduino-cli lib install "LiquidCrystal"
+        arduino-cli lib install "SoftwareSerial"
+        arduino-cli lib install "Stepper"
+        arduino-cli lib install "SD"
+        arduino-cli lib install "EEPROM"
+        echo "Common Arduino Uno libraries installed"
     
     - name: Install Arduino cores
       run: |
         arduino-cli core install arduino:avr
-        arduino-cli core install esp32:esp32 --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+        echo "Arduino AVR core installed for Uno, Nano, Leonardo, etc."
     
     - name: List available sketches
       run: |
