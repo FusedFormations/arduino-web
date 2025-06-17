@@ -3,8 +3,14 @@ name: Arduino Compilation
 on:
   push:
     branches: [ main, master ]
+    paths: 
+      - 'sketches/**/*.ino'
+      - 'sketches/**/*.cpp'
+      - 'sketches/**/*.h'
   pull_request:
     branches: [ main, master ]
+    paths: 
+      - 'sketches/**/*.ino'
   repository_dispatch:
     types: [compile-arduino]
 
@@ -21,17 +27,153 @@ jobs:
       with:
         version: '1.0.4'
     
-    - name: Create sketch directory
+    - name: Prepare sketch files
       run: |
         if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
           # For API calls - create sketch from payload
           SKETCH_NAME="${{ github.event.client_payload.filename }}"
           mkdir -p "sketches/${SKETCH_NAME}"
-          # Use base64 encoding to handle special characters safely
           echo '${{ github.event.client_payload.code }}' | base64 -d > "sketches/${SKETCH_NAME}/${SKETCH_NAME}.ino"
         else
-          # For push/PR events - use existing sketch files
-          echo "Using existing sketch files in repository"
+          # For push/PR events - organize existing sketch files
+          echo "Using existing sketch files from push event"
+          echo "Changed files in this push:"
+          git diff --name-only HEAD~1 HEAD | grep -E '\.(ino|cpp|h)
+    
+    - name: Update Arduino CLI core index
+      run: arduino-cli core update-index --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+    
+    - name: Install Arduino cores
+      run: |
+        arduino-cli core install arduino:avr
+        arduino-cli core install esp32:esp32 --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+    
+    - name: List available sketches
+      run: |
+        echo "Available sketches:"
+        find . -name "*.ino" -type f
+    
+    - name: Compile sketches
+      run: |
+        if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+          # Single sketch from API call
+          SKETCH_NAME="${{ github.event.client_payload.filename }}"
+          FQBN="${{ github.event.client_payload.fqbn }}"
+          SKETCH_PATH="sketches/${SKETCH_NAME}"
+          
+          echo "Compiling sketch: $SKETCH_NAME"
+          echo "FQBN: $FQBN"
+          echo "Sketch path: $SKETCH_PATH"
+          
+          mkdir -p "builds/${SKETCH_NAME}"
+          
+          arduino-cli compile \
+            --fqbn "$FQBN" \
+            --output-dir "builds/${SKETCH_NAME}" \
+            --verbose \
+            --export-binaries \
+            "$SKETCH_PATH"
+            
+          if [ $? -eq 0 ]; then
+            echo "✅ Successfully compiled $SKETCH_NAME"
+          else
+            echo "❌ Failed to compile $SKETCH_NAME"
+            exit 1
+          fi
+        else
+          # For push events - find and compile all .ino files in sketches directory
+          SKETCHES_FOUND=false
+          for ino_file in $(find sketches/ -name "*.ino" -type f 2>/dev/null); do
+            SKETCHES_FOUND=true
+            echo "Processing sketch: $ino_file"
+            
+            # Get the sketch name without extension
+            SKETCH_NAME=$(basename "$ino_file" .ino)
+            SKETCH_DIR=$(dirname "$ino_file")
+            
+            # Arduino CLI expects sketch to be in a directory with the same name
+            TARGET_DIR="sketches/${SKETCH_NAME}"
+            
+            # Create proper directory structure if needed
+            if [ "$SKETCH_DIR" != "$TARGET_DIR" ]; then
+              echo "Reorganizing sketch structure..."
+              mkdir -p "$TARGET_DIR"
+              cp "$ino_file" "$TARGET_DIR/${SKETCH_NAME}.ino"
+              # Copy any other files in the same directory
+              if [ -d "$SKETCH_DIR" ]; then
+                find "$SKETCH_DIR" -name "*.cpp" -o -name "*.h" | while read file; do
+                  cp "$file" "$TARGET_DIR/"
+                done
+              fi
+            fi
+            
+            SKETCH_PATH="$TARGET_DIR"
+            FQBN="arduino:avr:uno"  # Default board - you can make this configurable
+            
+            echo "Compiling sketch: $SKETCH_NAME"
+            echo "FQBN: $FQBN"
+            echo "Sketch path: $SKETCH_PATH"
+            
+            mkdir -p "builds/${SKETCH_NAME}"
+            
+            arduino-cli compile \
+              --fqbn "$FQBN" \
+              --output-dir "builds/${SKETCH_NAME}" \
+              --verbose \
+              --export-binaries \
+              "$SKETCH_PATH"
+              
+            if [ $? -eq 0 ]; then
+              echo "✅ Successfully compiled $SKETCH_NAME"
+            else
+              echo "❌ Failed to compile $SKETCH_NAME"
+              exit 1
+            fi
+          done
+          
+          if [ "$SKETCHES_FOUND" = false ]; then
+            echo "No .ino files found in sketches directory"
+            exit 1
+          fi
+        fi
+    
+    - name: List compiled files
+      run: |
+        echo "Compiled files:"
+        find builds/ -type f
+    
+    - name: Upload hex files
+      uses: actions/upload-artifact@v4
+      if: success()
+      with:
+        name: arduino-firmware-${{ github.run_number }}
+        path: |
+          builds/**/*.hex
+          builds/**/*.bin
+          builds/**/*.elf
+        retention-days: 30
+    
+    - name: Create release
+      if: success() && github.event_name == 'push'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: build-${{ github.run_number }}
+        name: Arduino Build ${{ github.run_number }}
+        body: |
+          🔧 **Arduino Firmware Build**
+          
+          - **Commit**: ${{ github.sha }}
+          - **Branch**: ${{ github.ref_name }}
+          - **Build Number**: ${{ github.run_number }}
+          
+          Download the firmware files from the artifacts below.
+        files: |
+          builds/**/*.hex
+          builds/**/*.bin
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} || echo "No Arduino files changed"
         fi
     
     - name: Update Arduino CLI core index
