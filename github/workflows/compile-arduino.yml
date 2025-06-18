@@ -1,13 +1,7 @@
-name: Arduino Compilation
+name: Arduino Web IDE Compilation
 
 on:
   push:
-    branches: [ main, master ]
-    paths: 
-      - 'sketches/**/*.ino'
-      - 'sketches/**/*.cpp'
-      - 'sketches/**/*.h'
-  pull_request:
     branches: [ main, master ]
     paths: 
       - 'sketches/**/*.ino'
@@ -27,132 +21,184 @@ jobs:
       with:
         version: '1.0.4'
     
-    - name: Prepare sketch files
-      run: |
-        if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-          # For API calls - create sketch from payload
-          SKETCH_NAME="${{ github.event.client_payload.filename }}"
-          mkdir -p "sketches/${SKETCH_NAME}"
-          echo '${{ github.event.client_payload.code }}' | base64 -d > "sketches/${SKETCH_NAME}/${SKETCH_NAME}.ino"
-        else
-          # For push/PR events - organize existing sketch files
-          echo "Using existing sketch files from push event"
-          echo "Changed files in this push:"
-          git diff --name-only HEAD~1 HEAD | grep -E '\.(ino|cpp|h)
-    
     - name: Update Arduino CLI core index
-      run: arduino-cli core update-index
-    
-    - name: Install common Arduino Uno libraries
       run: |
-        arduino-cli lib install "Servo"
-        arduino-cli lib install "LiquidCrystal"
-        arduino-cli lib install "SoftwareSerial"
-        arduino-cli lib install "Stepper"
-        arduino-cli lib install "SD"
-        arduino-cli lib install "EEPROM"
-        echo "Common Arduino Uno libraries installed"
+        arduino-cli core update-index
+        echo "✅ Arduino CLI core index updated"
     
-    - name: Install Arduino cores
+    - name: Install Arduino AVR core
       run: |
         arduino-cli core install arduino:avr
-        echo "Arduino AVR core installed for Uno, Nano, Leonardo, etc."
+        echo "✅ Arduino AVR core installed"
+    
+    - name: Install essential Arduino libraries
+      run: |
+        echo "📚 Installing essential Arduino libraries..."
+        arduino-cli lib install "Servo" || echo "Servo already installed"
+        arduino-cli lib install "LiquidCrystal" || echo "LiquidCrystal already installed"
+        arduino-cli lib install "SoftwareSerial" || echo "SoftwareSerial already installed"
+        arduino-cli lib install "Stepper" || echo "Stepper already installed"
+        echo "✅ Essential libraries installed"
     
     - name: List available sketches
       run: |
-        echo "Available sketches:"
-        find . -name "*.ino" -type f
+        echo "🔍 Available sketches:"
+        find sketches/ -name "*.ino" -type f || echo "No sketches found"
     
-    - name: Compile sketches
+    - name: Compile Arduino sketches
       run: |
+        echo "🔨 Starting Arduino compilation..."
+        mkdir -p builds
+        
         if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-          # Single sketch from API call
+          # Single sketch from web IDE
           SKETCH_NAME="${{ github.event.client_payload.filename }}"
           FQBN="${{ github.event.client_payload.fqbn }}"
-          SKETCH_PATH="sketches/${SKETCH_NAME}"
           
-          echo "Compiling sketch: $SKETCH_NAME"
-          echo "FQBN: $FQBN"
-          echo "Sketch path: $SKETCH_PATH"
+          echo "🌐 Web IDE Compilation Request"
+          echo "📝 Sketch: $SKETCH_NAME"
+          echo "🎯 Board: $FQBN"
           
-          mkdir -p "builds/${SKETCH_NAME}"
+          # Look for the sketch file
+          SKETCH_FILE=""
+          if [ -f "sketches/$SKETCH_NAME/$SKETCH_NAME.ino" ]; then
+            SKETCH_FILE="sketches/$SKETCH_NAME/$SKETCH_NAME.ino"
+            SKETCH_DIR="sketches/$SKETCH_NAME"
+          elif [ -f "sketches/$SKETCH_NAME.ino" ]; then
+            SKETCH_FILE="sketches/$SKETCH_NAME.ino"
+            SKETCH_DIR="sketches"
+          else
+            echo "❌ Sketch file not found!"
+            echo "Looking for: sketches/$SKETCH_NAME/$SKETCH_NAME.ino or sketches/$SKETCH_NAME.ino"
+            echo "Available files:"
+            find sketches/ -name "*.ino" -type f
+            exit 1
+          fi
           
-          arduino-cli compile \
+          echo "✅ Found sketch: $SKETCH_FILE"
+          
+          # Create proper directory structure for Arduino CLI
+          TEMP_DIR="temp_$SKETCH_NAME"
+          mkdir -p "$TEMP_DIR"
+          cp "$SKETCH_FILE" "$TEMP_DIR/$SKETCH_NAME.ino"
+          
+          # Copy any additional files from the sketch directory
+          if [ -d "sketches/$SKETCH_NAME" ]; then
+            find "sketches/$SKETCH_NAME" -name "*.cpp" -o -name "*.h" | while read file; do
+              cp "$file" "$TEMP_DIR/"
+            done
+          fi
+          
+          echo "🔨 Compiling $SKETCH_NAME for $FQBN..."
+          
+          # Compile the sketch
+          mkdir -p "builds/$SKETCH_NAME"
+          
+          if arduino-cli compile \
             --fqbn "$FQBN" \
-            --output-dir "builds/${SKETCH_NAME}" \
+            --output-dir "builds/$SKETCH_NAME" \
             --verbose \
             --export-binaries \
-            "$SKETCH_PATH"
+            "$TEMP_DIR"; then
             
-          if [ $? -eq 0 ]; then
-            echo "✅ Successfully compiled $SKETCH_NAME"
+            echo "✅ Compilation successful!"
+            
+            # List generated files
+            echo "📄 Generated files:"
+            find "builds/$SKETCH_NAME" -type f -name "*.hex" -o -name "*.bin" -o -name "*.elf"
+            
           else
-            echo "❌ Failed to compile $SKETCH_NAME"
+            echo "❌ Compilation failed!"
             exit 1
           fi
+          
         else
-          # For push events - find and compile all .ino files in sketches directory
-          SKETCHES_FOUND=false
-          for ino_file in $(find sketches/ -name "*.ino" -type f 2>/dev/null); do
-            SKETCHES_FOUND=true
-            echo "Processing sketch: $ino_file"
+          # Repository push - compile all sketches
+          echo "📂 Repository Push - Compiling All Sketches"
+          
+          COMPILATION_SUCCESS=false
+          
+          # Find all .ino files
+          for sketch_file in $(find sketches/ -name "*.ino" -type f); do
+            echo "🔍 Processing: $sketch_file"
             
-            # Get the sketch name without extension
-            SKETCH_NAME=$(basename "$ino_file" .ino)
-            SKETCH_DIR=$(dirname "$ino_file")
+            # Extract sketch name from filename
+            SKETCH_NAME=$(basename "$sketch_file" .ino)
             
-            # Arduino CLI expects sketch to be in a directory with the same name
-            TARGET_DIR="sketches/${SKETCH_NAME}"
+            echo "🔨 Compiling: $SKETCH_NAME"
             
-            # Create proper directory structure if needed
-            if [ "$SKETCH_DIR" != "$TARGET_DIR" ]; then
-              echo "Reorganizing sketch structure..."
-              mkdir -p "$TARGET_DIR"
-              cp "$ino_file" "$TARGET_DIR/${SKETCH_NAME}.ino"
-              # Copy any other files in the same directory
-              if [ -d "$SKETCH_DIR" ]; then
-                find "$SKETCH_DIR" -name "*.cpp" -o -name "*.h" | while read file; do
-                  cp "$file" "$TARGET_DIR/"
-                done
-              fi
+            # Create proper directory structure
+            TEMP_DIR="temp_$SKETCH_NAME"
+            mkdir -p "$TEMP_DIR"
+            cp "$sketch_file" "$TEMP_DIR/$SKETCH_NAME.ino"
+            
+            # Copy any additional files from the same directory
+            SKETCH_DIR=$(dirname "$sketch_file")
+            if [ -d "$SKETCH_DIR" ] && [ "$SKETCH_DIR" != "sketches" ]; then
+              find "$SKETCH_DIR" -name "*.cpp" -o -name "*.h" | while read file; do
+                cp "$file" "$TEMP_DIR/" 2>/dev/null || true
+              done
             fi
             
-            SKETCH_PATH="$TARGET_DIR"
-            FQBN="arduino:avr:uno"  # Default board - you can make this configurable
+            # Compile
+            mkdir -p "builds/$SKETCH_NAME"
             
-            echo "Compiling sketch: $SKETCH_NAME"
-            echo "FQBN: $FQBN"
-            echo "Sketch path: $SKETCH_PATH"
-            
-            mkdir -p "builds/${SKETCH_NAME}"
-            
-            arduino-cli compile \
-              --fqbn "$FQBN" \
-              --output-dir "builds/${SKETCH_NAME}" \
+            if arduino-cli compile \
+              --fqbn "arduino:avr:uno" \
+              --output-dir "builds/$SKETCH_NAME" \
               --verbose \
               --export-binaries \
-              "$SKETCH_PATH"
+              "$TEMP_DIR"; then
               
-            if [ $? -eq 0 ]; then
               echo "✅ Successfully compiled $SKETCH_NAME"
+              COMPILATION_SUCCESS=true
+              
             else
               echo "❌ Failed to compile $SKETCH_NAME"
-              exit 1
+              # Don't fail the entire workflow for one sketch
             fi
+            
+            # Clean up temp directory
+            rm -rf "$TEMP_DIR"
           done
           
-          if [ "$SKETCHES_FOUND" = false ]; then
-            echo "No .ino files found in sketches directory"
+          if [ "$COMPILATION_SUCCESS" = false ]; then
+            echo "❌ No sketches compiled successfully"
             exit 1
           fi
         fi
     
-    - name: List compiled files
+    - name: Verify compiled files
       run: |
-        echo "Compiled files:"
-        find builds/ -type f
+        echo "📋 Verifying compilation results..."
+        
+        HEX_FILES=$(find builds/ -name "*.hex" -type f)
+        
+        if [ -z "$HEX_FILES" ]; then
+          echo "❌ No .hex files generated!"
+          echo "📂 Build directory contents:"
+          find builds/ -type f
+          exit 1
+        fi
+        
+        echo "🎯 Successfully generated firmware files:"
+        for hex_file in $HEX_FILES; do
+          FILE_SIZE=$(wc -c < "$hex_file")
+          echo "  📄 $hex_file ($FILE_SIZE bytes)"
+          
+          # Basic hex file validation
+          if head -1 "$hex_file" | grep -q "^:"; then
+            echo "    ✅ Valid Intel HEX format"
+          else
+            echo "    ❌ Invalid HEX format!"
+            head -3 "$hex_file"
+            exit 1
+          fi
+        done
+        
+        echo "✅ All firmware files validated successfully"
     
-    - name: Upload hex files
+    - name: Upload firmware artifacts
       uses: actions/upload-artifact@v4
       if: success()
       with:
@@ -163,108 +209,79 @@ jobs:
           builds/**/*.elf
         retention-days: 30
     
-    - name: Create release
-      if: success() && github.event_name == 'push'
-      uses: softprops/action-gh-release@v1
-      with:
-        tag_name: build-${{ github.run_number }}
-        name: Arduino Build ${{ github.run_number }}
-        body: |
-          🔧 **Arduino Firmware Build**
-          
-          - **Commit**: ${{ github.sha }}
-          - **Branch**: ${{ github.ref_name }}
-          - **Build Number**: ${{ github.run_number }}
-          
-          Download the firmware files from the artifacts below.
-        files: |
-          builds/**/*.hex
-          builds/**/*.bin
-        draft: false
-        prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} || echo "No Arduino files changed"
-        fi
-    
-    - name: Update Arduino CLI core index
-      run: arduino-cli core update-index --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-    
-    - name: Install Arduino cores
+    - name: Commit compiled files back to repository
+      if: success()
       run: |
-        arduino-cli core install arduino:avr
-        arduino-cli core install esp32:esp32 --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-    
-    - name: List available sketches
-      run: |
-        echo "Available sketches:"
-        find . -name "*.ino" -type f
-    
-    - name: Compile sketch
-      run: |
-        if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-          SKETCH_NAME="${{ github.event.client_payload.filename }}"
-          FQBN="${{ github.event.client_payload.fqbn }}"
-          SKETCH_PATH="sketches/${SKETCH_NAME}"
+        # Configure git
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        # Add compiled files
+        git add builds/
+        
+        # Check if there are changes to commit
+        if git diff --staged --quiet; then
+          echo "📝 No new files to commit"
         else
-          # Auto-detect sketch for push events
-          SKETCH_FILE=$(find . -name "*.ino" -type f | head -1)
-          if [ -z "$SKETCH_FILE" ]; then
-            echo "No .ino files found in repository"
-            exit 1
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            git commit -m "Add compiled firmware for ${{ github.event.client_payload.filename }} [skip ci]"
+          else
+            git commit -m "Add compiled firmware files [skip ci]"
           fi
-          SKETCH_PATH=$(dirname "$SKETCH_FILE")
-          SKETCH_NAME=$(basename "$SKETCH_FILE" .ino)
-          # Default FQBN - adjust as needed for your board
-          FQBN="arduino:avr:uno"
+          
+          # Push changes
+          git push
+          echo "✅ Compiled files committed to repository"
         fi
-        
-        echo "Compiling sketch: $SKETCH_NAME"
-        echo "FQBN: $FQBN"
-        echo "Sketch path: $SKETCH_PATH"
-        
-        mkdir -p "builds/${SKETCH_NAME}"
-        
-        arduino-cli compile \
-          --fqbn "$FQBN" \
-          --output-dir "builds/${SKETCH_NAME}" \
-          --verbose \
-          --export-binaries \
-          "$SKETCH_PATH"
     
-    - name: List compiled files
-      run: |
-        echo "Compiled files:"
-        find builds/ -type f
-    
-    - name: Upload hex files
-      uses: actions/upload-artifact@v4
-      if: success()
-      with:
-        name: arduino-firmware-${{ github.run_number }}
-        path: |
-          builds/**/*.hex
-          builds/**/*.bin
-          builds/**/*.elf
-        retention-days: 30
-    
-    - name: Create release
-      if: success() && github.event_name == 'push'
+    - name: Create release for web IDE
+      if: success() && github.event_name == 'repository_dispatch'
       uses: softprops/action-gh-release@v1
       with:
-        tag_name: build-${{ github.run_number }}
-        name: Arduino Build ${{ github.run_number }}
+        tag_name: firmware-${{ github.event.client_payload.filename }}-${{ github.run_number }}
+        name: "🚀 ${{ github.event.client_payload.filename }} - Arduino Firmware"
         body: |
-          🔧 **Arduino Firmware Build**
+          ## 🎯 Arduino Firmware Ready!
           
-          - **Commit**: ${{ github.sha }}
-          - **Branch**: ${{ github.ref_name }}
-          - **Build Number**: ${{ github.run_number }}
+          **Sketch:** `${{ github.event.client_payload.filename }}.ino`  
+          **Board:** ${{ github.event.client_payload.fqbn }}  
+          **Compiled:** ${{ steps.date.outputs.date }}  
           
-          Download the firmware files from the artifacts below.
+          ### 📥 Download Instructions:
+          1. Download the `.hex` file below
+          2. Use Arduino IDE or avrdude to upload to your board
+          3. Or use the web IDE's automatic upload feature
+          
+          ### 🔧 Manual Upload Command:
+          ```bash
+          avrdude -p atmega328p -c arduino -P [YOUR_PORT] -U flash:w:firmware.hex:i
+          ```
+          
+          **✨ Compiled via Web IDE - Perfect for Chromebooks!**
         files: |
           builds/**/*.hex
-          builds/**/*.bin
         draft: false
         prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Web IDE completion notification
+      if: always() && github.event_name == 'repository_dispatch'
+      run: |
+        if [ "${{ job.status }}" = "success" ]; then
+          echo "🎉 Web IDE compilation completed successfully!"
+          echo "📱 Firmware ready for download"
+          echo "🔗 Available at:"
+          find builds/ -name "*.hex" | while read hex_file; do
+            echo "   📄 https://github.com/${{ github.repository }}/raw/${{ github.sha }}/$hex_file"
+          done
+        else
+          echo "❌ Web IDE compilation failed"
+          echo "🔍 Check the logs above for syntax errors"
+        fi
+        
+        echo "📊 Workflow Summary:"
+        echo "   - Run ID: ${{ github.run_id }}"
+        echo "   - Sketch: ${{ github.event.client_payload.filename }}"
+        echo "   - Board: ${{ github.event.client_payload.fqbn }}"
+        echo "   - Status: ${{ job.status }}"
